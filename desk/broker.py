@@ -18,6 +18,7 @@ from pathlib import Path
 
 from config import EXITS, LEDGER_LOCK_SECONDS, LEDGER_MAX_APPLIED, LEDGER_MAX_CLOSED, PAPER
 
+from desk.filelock import FileLock
 from desk.num import finite_number, finite_positive, quote_price, quote_volume
 
 LEDGER = Path("paper_ledger.json")
@@ -51,10 +52,11 @@ def _day(now) -> date:
 
 
 class PaperBroker:
-    def __init__(self, path: Path = LEDGER):
+    def __init__(self, path: Path = LEDGER, lock_timeout: float | None = None):
         self.path = Path(path)
         self.lock_path = Path(str(self.path) + ".lock")
-        self._fh = None
+        timeout = LEDGER_LOCK_SECONDS if lock_timeout is None else lock_timeout
+        self._filelock = FileLock(self.lock_path, timeout)
         self._depth = 0
         self._thread = threading.RLock()
         self.s = None
@@ -87,54 +89,19 @@ class PaperBroker:
         self._thread.acquire()
         try:
             if self._depth == 0:
-                self._acquire_file()
+                try:
+                    self._filelock.acquire()
+                except TimeoutError as exc:
+                    raise LedgerError("ledger lock timeout") from exc
             self._depth += 1
             try:
                 yield
             finally:
                 self._depth -= 1
                 if self._depth == 0:
-                    self._release_file()
+                    self._filelock.release()
         finally:
             self._thread.release()
-
-    def _acquire_file(self):
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = open(self.lock_path, "a+")
-        deadline = time.monotonic() + LEDGER_LOCK_SECONDS
-        while True:
-            try:
-                if os.name == "nt":
-                    import msvcrt
-                    self._fh.seek(0)
-                    self._fh.write("0")
-                    self._fh.flush()
-                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return
-            except (BlockingIOError, OSError):
-                if time.monotonic() >= deadline:
-                    self._fh.close()
-                    self._fh = None
-                    raise LedgerError("ledger lock timeout")
-                time.sleep(0.01)
-
-    def _release_file(self):
-        if self._fh is None:
-            return
-        try:
-            if os.name == "nt":
-                import msvcrt
-                self._fh.seek(0)
-                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            self._fh.close()
-            self._fh = None
 
     def _reload(self):
         try:

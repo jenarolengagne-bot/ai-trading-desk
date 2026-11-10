@@ -1,8 +1,10 @@
 """Regressions for the offline audit. No network and no paid client."""
 import json
+import multiprocessing
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import config
 from desk import analyst, chain, scanner
 from desk.broker import LedgerError, PaperBroker
+from desk.filelock import FileLock, child_main
 from desk.cycle import run_cycle
 from desk.ops import Bench, Journal
 from desk.replay import run_fixture
@@ -284,6 +287,102 @@ class Ledger(unittest.TestCase):
         again = self.b.on_quote("M", {"price_usd": trigger}, now=NOON)
         self.assertEqual(again["status"], "gone")
         self.assertEqual(self.b.open_count(), 0)
+
+    def _spawn(self, args):
+        ctx = multiprocessing.get_context("spawn")
+        proc = ctx.Process(target=child_main, args=args)
+        proc.start()
+        return proc
+
+    def test_two_processes_keep_both_buys(self):
+        """Separate interpreters, spawn start method. Not threads."""
+        procs = [self._spawn(("buy", str(self.path), mint)) for mint in ("A", "C")]
+        try:
+            codes = [proc.join(30) or proc.exitcode for proc in procs]
+        finally:
+            for proc in procs:
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(5)
+        errors = []
+        for mint in ("A", "C"):
+            err = Path(str(self.path) + f".buy.{mint}.err")
+            if err.exists():
+                errors.append(err.read_text(encoding="utf-8"))
+        self.assertEqual(errors, [])
+        self.assertEqual(codes, [0, 0])
+        reloaded = PaperBroker(self.path)
+        self.assertEqual(set(reloaded.s["positions"]), {"A", "C"})
+        self.assertAlmostEqual(reloaded.s["cash"], 960)
+        self.assertTrue(reloaded.reconcile()["finite"])
+
+    def test_failed_acquire_does_not_write_and_release_is_harmless(self):
+        # Construct before the holder so __init__ itself is not the contention.
+        waiter = PaperBroker(self.path, lock_timeout=0.3)
+        before = self.path.read_bytes()
+        ready = Path(self.dir) / "ready"
+        proc = self._spawn(("hold", str(self.path) + ".lock", "2", str(ready)))
+        try:
+            for _ in range(100):
+                if ready.exists():
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("holder did not acquire")
+            with self.assertRaises(LedgerError):
+                waiter.buy("Z", "Z", 20, 1.0, now=NOON, key="Z")
+            self.assertEqual(self.path.read_bytes(), before)
+            # The buy never acquired: releasing again must not raise.
+            waiter._filelock.release()
+        finally:
+            proc.join(10)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(5)
+        self.assertEqual(proc.exitcode, 0)
+        after = PaperBroker(self.path)
+        after.buy("Z", "Z", 20, 1.0, now=NOON, key="Z")
+        self.assertIn("Z", after.s["positions"])
+
+    def test_exception_inside_lock_releases(self):
+        class Boom(PaperBroker):
+            def _save(self):
+                if getattr(self, "_explode", False):
+                    raise RuntimeError("boom")
+                super()._save()
+
+        boom = Boom(self.path)
+        boom._explode = True
+        with self.assertRaises(RuntimeError):
+            boom.buy("M", "M", 20, 1.0, now=NOON, key="M")
+        self.assertNotIn("M", PaperBroker(self.path).s["positions"])
+        follow = PaperBroker(self.path)
+        follow.buy("Q", "Q", 20, 1.0, now=NOON, key="Q")
+        self.assertIn("Q", follow.s["positions"])
+        self.assertAlmostEqual(follow.s["cash"], 980)
+
+    def test_direct_lock_release_after_timeout(self):
+        ready = Path(self.dir) / "ready-direct"
+        proc = self._spawn(("hold", str(self.path) + ".direct.lock", "2", str(ready)))
+        lock = FileLock(Path(str(self.path) + ".direct.lock"), timeout=0.3)
+        try:
+            for _ in range(100):
+                if ready.exists():
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("holder did not acquire")
+            with self.assertRaises(TimeoutError):
+                lock.acquire()
+            lock.release()
+        finally:
+            proc.join(10)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(5)
+        self.assertEqual(proc.exitcode, 0)
+        with FileLock(Path(str(self.path) + ".direct.lock"), timeout=2):
+            pass
 
 
 class CycleAndReplay(unittest.TestCase):
