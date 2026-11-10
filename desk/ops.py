@@ -8,20 +8,48 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
-
-from config import BENCH_MINUTES, DEFAULT_BENCH
+from config import BENCH_MINUTES, DEFAULT_BENCH, JOURNAL_MAX_LINES
 
 JOURNAL = Path("journal.jsonl")
 KILL_FILE = Path("KILL")
 
 
+def _stamp(now) -> str:
+    if now is None:
+        return datetime.now(timezone.utc).isoformat()
+    if isinstance(now, datetime):
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return now.isoformat()
+    return str(now)
+
+
+class Journal:
+    """Append-only log with a hard line cap. The oldest lines are dropped."""
+
+    def __init__(self, path: Path | str = JOURNAL, max_lines: int = JOURNAL_MAX_LINES):
+        self.path = Path(path)
+        self.max_lines = max_lines
+
+    def write(self, kind: str, now=None, **fields) -> dict:
+        row = {"time": _stamp(now), "kind": kind, **fields}
+        line = json.dumps(row, default=str, allow_nan=False)
+        existing = []
+        if self.path.exists():
+            existing = [ln for ln in self.path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        existing.append(line)
+        if len(existing) > self.max_lines:
+            existing = existing[-self.max_lines:]
+        payload = "\n".join(existing) + "\n"
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, self.path)
+        return row
+
+
 # ---------- journal: every decision, including every rejection ----------
 def journal(kind: str, **fields) -> dict:
-    row = {"time": datetime.now(timezone.utc).isoformat(), "kind": kind, **fields}
-    with JOURNAL.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, default=str) + "\n")
-    return row
+    return Journal().write(kind, **fields)
 
 
 # ---------- bench: a rejected token sits out, for as long as its failure deserves ----------
@@ -31,28 +59,32 @@ class Bench:
         self.db.execute("CREATE TABLE IF NOT EXISTS bench(mint TEXT PRIMARY KEY, reason TEXT, until REAL)")
         self.db.commit()
 
-    def benched(self, mint: str) -> bool:
-        r = self.db.execute("SELECT until FROM bench WHERE mint=?", (mint,)).fetchone()
-        return bool(r and r[0] > time.time())
+    def _clock(self, now) -> float:
+        if now is None:
+            return time.time()
+        if isinstance(now, datetime):
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            return now.timestamp()
+        return float(now)
 
-    def sit(self, mint: str, reason: str):
+    def benched(self, mint: str, now=None) -> bool:
+        r = self.db.execute("SELECT until FROM bench WHERE mint=?", (mint,)).fetchone()
+        return bool(r and r[0] > self._clock(now))
+
+    def sit(self, mint: str, reason: str, now=None):
         mins = BENCH_MINUTES.get(reason, DEFAULT_BENCH)
+        clock = self._clock(now)
+        self.db.execute("DELETE FROM bench WHERE until<=?", (clock,))
         self.db.execute("INSERT OR REPLACE INTO bench VALUES (?,?,?)",
-                        (mint, reason, time.time() + mins * 60))
+                        (mint, reason, clock + mins * 60))
         self.db.commit()
 
 
 # ---------- alerts: Telegram if configured, stdout otherwise ----------
 def alert(text: str):
-    token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
+    """Local stdout only. Telegram is disabled in this offline build."""
     print(text)
-    if token and chat:
-        try:
-            requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                          json={"chat_id": chat, "text": text,
-                                "disable_web_page_preview": True}, timeout=10)
-        except Exception as e:
-            print(f"telegram failed: {e}")
 
 
 # ---------- kill switch: create a file named KILL and the desk stops ----------
