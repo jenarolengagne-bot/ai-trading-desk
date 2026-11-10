@@ -1,0 +1,30 @@
+{
+  "now": "2026-10-26T12:00:00+00:00",
+  "chain_attempts": 8,
+  "execute_exits": true,
+  "tokens": [
+    {
+      "mint": "MINT",
+      "symbol": "T",
+      "age_minutes": 45,
+      "liquidity_usd": 30000,
+      "volume_h1": 60000,
+      "mcap_usd": 200000,
+      "buys_h1": 400,
+      "sells_h1": 250,
+      "price_usd": 0.0002
+    }
+  ],
+  "facts": {
+    "MINT": {
+      "mint_authority": null,
+      "freeze_authority": null,
+      "authorities_known": true,
+      "top_wallet_pct": 0.01,
+      "top_10_pct": 0.1,
+      "creator_since_migration": {"wallet": "stuffed-by-the-caller"},
+      "bundle_proof": true
+    }
+  },
+  "quotes": {}
+}

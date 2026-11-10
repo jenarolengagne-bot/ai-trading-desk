@@ -93,7 +93,11 @@ class ChainFacts(unittest.TestCase):
         self.assertAlmostEqual(f["top_wallet_pct"], 0.03)
         self.assertAlmostEqual(f["top_10_pct"], 0.05)
         self.assertAlmostEqual(f["program_held_pct"], 0.70)
-        self.assertIsNone(chain.chain_kill(f))
+        # Concentration can pass and the entry still fails closed: this build
+        # has no creator-since-migration history and no bundle proof.
+        self.assertEqual(chain.chain_kill(f), "unknown_evidence")
+        self.assertIsNone(f["creator_since_migration"])
+        self.assertIsNone(f["bundle_proof"])
 
     def test_authority_is_a_fact(self):
         base = {"mint_authority": None, "freeze_authority": None,
@@ -169,7 +173,12 @@ class PaperExits(unittest.TestCase):
         self.assertEqual(self.b.exit_signal("M", self.q(0.6))[0], 1.0)
 
     def test_take_half_once(self):
+        sig = self.b.exit_signal("M", self.q(2.1))
+        self.assertEqual(sig[0], 0.5)
+        # Planning does not consume the partial. The fill does.
         self.assertEqual(self.b.exit_signal("M", self.q(2.1))[0], 0.5)
+        self.b.sell("M", sig[0], 2.1, sig[1])
+        self.assertTrue(self.b.s["positions"]["M"]["half_taken"])
         self.assertIsNone(self.b.exit_signal("M", self.q(2.1)))
 
     def test_volume_decay_after_30_min(self):
