@@ -453,6 +453,68 @@ class CycleAndReplay(unittest.TestCase):
         self.assertFalse(first["risk_cap_is_fill_guarantee"])
         json.dumps(first, allow_nan=False)
 
+    def test_replay_closes_bench_database_before_cleanup(self):
+        """The sqlite bench file must be closed before a directory can be removed.
+
+        On Windows an open file cannot be renamed or deleted. On Linux the same
+        leak still shows up as a live sqlite connection and as an open fd.
+        """
+        import os
+        import sqlite3
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from desk import ops
+
+        path = Path("tests/fixtures/replay_reject.json")
+        if not path.exists():
+            path = Path(__file__).resolve().parent / "fixtures" / "replay_reject.json"
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+        opened = []
+        real_connect = ops.sqlite3.connect
+
+        def spy(db_path, *args, **kwargs):
+            conn = real_connect(db_path, *args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        ops.sqlite3.connect = spy
+        try:
+            ledger = Path(self.dir) / "ledger.json"
+            report = run_fixture(fixture, ledger)
+        finally:
+            ops.sqlite3.connect = real_connect
+        self.assertEqual(report["stats"]["entries"], 0)
+        self.assertEqual(report["analyst_calls"], 0)
+        self.assertTrue(any(event.get("reason") == "unknown_evidence" for event in report["events"]))
+        self.assertGreaterEqual(len(opened), 1)
+        for conn in opened:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")
+        bench_path = ledger.with_suffix(".bench.db")
+        renamed = bench_path.with_name("bench-closed.db")
+        os.rename(bench_path, renamed)
+        renamed.unlink()
+        fd_root = Path("/proc/self/fd")
+        if fd_root.is_dir():
+            leaked = []
+            for entry in fd_root.iterdir():
+                try:
+                    target = os.readlink(entry)
+                except OSError:
+                    continue
+                if str(self.dir) in target:
+                    leaked.append(target)
+            self.assertEqual(leaked, [])
+        buf = StringIO()
+        with redirect_stdout(buf):
+            code = run_crypto.main(["--replay", str(path)])
+        self.assertEqual(code, 0)
+        text = buf.getvalue()
+        self.assertIn('"entries": 0', text)
+        self.assertIn('"analyst_calls": 0', text)
+        self.assertIn("unknown_evidence", text)
+
     def test_disabled_entry_points(self):
         self.assertEqual(run_crypto.main([]), 2)
         self.assertEqual(run_stocks.main([]), 2)

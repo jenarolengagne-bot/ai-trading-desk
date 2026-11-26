@@ -238,6 +238,10 @@ class PaperBroker:
         from desk.risk import Account
         return Account(self.equity(), self.day_pnl(), self.open_count(), self.s["day_start"])
 
+    def close(self):
+        """Drop any ledger lock handle still owned by this instance."""
+        self._filelock.release()
+
     def reconcile(self) -> dict:
         equity = self.equity()
         baseline = self.s["day_start"]

@@ -59,6 +59,20 @@ class Bench:
         self.db.execute("CREATE TABLE IF NOT EXISTS bench(mint TEXT PRIMARY KEY, reason TEXT, until REAL)")
         self.db.commit()
 
+    def close(self):
+        """Release the sqlite handle. Idempotent. Required before deleting the file on Windows."""
+        db = self.db
+        self.db = None
+        if db is not None:
+            db.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
     def _clock(self, now) -> float:
         if now is None:
             return time.time()

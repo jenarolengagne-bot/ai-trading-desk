@@ -26,9 +26,14 @@ def main(argv=None) -> int:
               "Pass --replay FIXTURE.json")
         return 2
     fixture = json.loads(args.replay.read_text(encoding="utf-8"))
-    with tempfile.TemporaryDirectory() as tmp:
-        report = run_fixture(fixture, Path(tmp) / "ledger.json")
-    print(json.dumps(report, indent=1, sort_keys=True, allow_nan=False))
+    directory = tempfile.TemporaryDirectory()
+    try:
+        report = run_fixture(fixture, Path(directory.name) / "ledger.json")
+        # Print before the temporary directory is removed. On Windows, cleanup
+        # raises if a handle is still open, and that used to hide this report.
+        print(json.dumps(report, indent=1, sort_keys=True, allow_nan=False), flush=True)
+    finally:
+        directory.cleanup()
     return 0
 
 
