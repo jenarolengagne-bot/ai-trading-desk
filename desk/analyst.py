@@ -51,7 +51,7 @@ How to read the fields:
   "one_buyer" = price rising faster than the number of buyers; "fading" = recent
   volume a small fraction of the hour; "too_early" = not enough data to tell.
 - A null field is missing data, not good news. Say so in red_flags.
-- program_held_pct is the bonding curve / pool. It is not a whale.
+- program_held_pct excludes non-system owners. It is not proof the holder is a curve or a pool, and it is not a substitute for creator history or bundle evidence.
 - No X or Telegram link is a red flag: launches without socials graduate far less.
 
 Standards:
@@ -73,9 +73,14 @@ rules-based system. You recommend; you never size positions or place orders.
 {UNTRUSTED_RULE}"""
 
 
+class AnalystDisabled(RuntimeError):
+    """The cloud analyst is not available in the offline build."""
+
+
 def wrap_untrusted(text: str) -> str:
-    tag = secrets.token_hex(2)
-    return f'<pasted_content id="{tag}">\n{text}\n</pasted_content id="{tag}">'
+    tag = secrets.token_hex(16)
+    safe = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    return f'<pasted_content id="{tag}">\n{safe}\n</pasted_content id="{tag}">'
 
 
 def token_state(t: dict, f: dict, links: dict) -> str:
@@ -86,9 +91,10 @@ def token_state(t: dict, f: dict, links: dict) -> str:
         "change_h6", "dex")}
     numbers |= {k: f.get(k) for k in (
         "top_wallet_pct", "top_10_pct", "program_held_pct", "wallets_counted")}
-    numbers["has_x"] = bool(links.get("x"))
-    numbers["has_telegram"] = bool(links.get("telegram"))
-    numbers["has_website"] = bool(links.get("website"))
+    unknown_links = (links or {}).get("status") == "unknown"
+    numbers["has_x"] = None if unknown_links else bool((links or {}).get("x"))
+    numbers["has_telegram"] = None if unknown_links else bool((links or {}).get("telegram"))
+    numbers["has_website"] = None if unknown_links else bool((links or {}).get("website"))
     third_party = json.dumps({"symbol": t.get("symbol"), "links": links})
     return (f"Fields:\n{json.dumps(numbers, indent=1)}\n\n"
             f"Third-party text:\n{wrap_untrusted(third_party)}\n\n"
@@ -97,8 +103,7 @@ def token_state(t: dict, f: dict, links: dict) -> str:
 
 def analyze_token(t: dict, f: dict, links: dict, client=None) -> TokenThesis:
     if client is None:
-        from anthropic import Anthropic   # imported late so tests run without the SDK
-        client = Anthropic()
+        raise AnalystDisabled("offline mode: the cloud analyst is not called")
     resp = client.messages.parse(
         model=ANALYST_MODEL,
         max_tokens=ANALYST_MAX_TOKENS,
@@ -113,8 +118,7 @@ def analyze_token(t: dict, f: dict, links: dict, client=None) -> TokenThesis:
 
 def analyze_stock(symbol: str, market_data: str, news: list[str], client=None) -> StockThesis:
     if client is None:
-        from anthropic import Anthropic
-        client = Anthropic()
+        raise AnalystDisabled("offline mode: the stock analyst is not called")
     news_block = "\n\n".join(wrap_untrusted(n) for n in news) or "(no news)"
     resp = client.messages.parse(
         model=ANALYST_MODEL,

@@ -42,22 +42,19 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env              # add ANTHROPIC_API_KEY (Telegram + RPC optional)
 
-make test                         # 17 offline tests, no keys needed
-make shadow                       # one full cycle: scan, check, score, alert. No position.
-make paper                        # paper trading, every 60 seconds
+make test                         # offline tests, no keys needed
+python run_crypto.py --replay tests/fixtures/replay_reject.json
 ```
 
-Stocks on a free Alpaca paper account:
+This build is offline. `python run_crypto.py` does not scan, does not call an analyst, and does not send Telegram. Stocks, Alpaca and `review.py --claude` are disabled. Live shadow/paper is not available in this phase.
+
+Stocks mode does not place Alpaca orders in this build:
 
 ```bash
-make stocks
+python run_stocks.py              # exits immediately, no order
 ```
 
-Stop everything, from anywhere:
-
-```bash
-touch KILL                        # next cycle: close all, stop
-```
+The live loop is disabled in this phase, so `touch KILL` has nothing to stop.
 
 ## 🧠 How it works
 
@@ -116,7 +113,7 @@ Every string a stranger wrote (token names, links, headlines) reaches the model 
 
 | Rule | Value |
 | --- | --- |
-| Stop | -35% from entry |
+| Stop | -35% from entry is a trigger, not a guaranteed fill. Fees (1%) and slippage (2%) still apply, and a gap can lose more than the 1% sizing input |
 | Take profit | sell half at 2x, once |
 | Volume decay | close when 6h volume < 20% of the 24h pace (after 30 min held) |
 | Time out | 24 hours, or the moment the price can't be fetched |
@@ -156,14 +153,14 @@ Every number lives in [`config.py`](config.py). Retune there and nowhere else. T
 | Chain | max top wallet / top 10 | 5% / 25% |
 | | mint or freeze authority | hard no |
 | Analyst | model / min score | `claude-opus-5-5` / 7 |
-| Risk | risk per trade / max position | 1% / 2% of equity |
+| Risk | risk per trade / max position | 1% sizes the ticket / 2% of equity. The 1% figure is not a maximum-loss guarantee |
 | | max share of pool | 2% |
 | | daily loss stop / max positions | -3% / 3 |
 | | quiet hours | 01:00 to 07:00 local |
 
 ## 💸 What it costs
 
-The analyst only sees tokens that survived every free check, capped at 3 calls per cycle. One call is roughly 1,500 tokens in and 600 out: about **$0.02** at Opus 5.5 list prices ($4 / $20 per million). A busy day of 300 calls is about $5. A dead market costs almost nothing. Check Anthropic's pricing page for current rates.
+This offline build allows **zero** cloud-analyst calls (`ANALYST_CALLS_ALLOWED = 0`). Quiet hours, the daily baseline and invalid data are rejected before that hook, and a failed chain read consumes the attempt budget instead of retrying the whole list. There is no paid call in the default entry points.
 
 ## 📊 Sunday review
 

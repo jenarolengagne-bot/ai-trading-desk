@@ -35,15 +35,23 @@ ANALYST_MAX_TOKENS = 8_000
 MIN_SCORE = 7                        # 0-10, the analyst's score must clear this
 
 # ---------- Seat 4: risk engine (pure code) ----------
+# max_risk_per_trade sizes the ticket as equity * 1% / stop. It is NOT a guaranteed
+# maximum loss: the stop is a trigger, fees and slippage still apply, and a gap
+# can lose more than 1% of equity. Do not lower min_ticket_usd or the caps to
+# force an entry. Equity of $300 correctly produces no entry.
 RISK = {
-    "max_risk_per_trade": 0.01,    # lose at most 1% of equity if the stop hits
+    "max_risk_per_trade": 0.01,
     "max_position_pct": 0.02,      # no position above 2% of equity (memecoins)
     "max_pool_share": 0.02,        # never be more than 2% of the pool: you'd be the exit
     "max_open_positions": 3,
-    "max_daily_loss_pct": 0.03,    # down 3% on the day -> desk stops until tomorrow
+    "max_daily_loss_pct": 0.03,    # down 3% from the day baseline -> no new entries
     "min_ticket_usd": 10,          # below this, fees eat the edge
     "quiet_hours": (1, 7),         # local hours with no new entries (1 AM to 7 AM)
 }
+STOP_FILL_GUARANTEED = False
+# Offline build: the cycle must not call a cloud analyst. This is a hard cap,
+# not a budget that refills when a call throws.
+ANALYST_CALLS_ALLOWED = 0
 
 # ---------- Seat 5: exits (paper broker applies these, no model involved) ----------
 EXITS = {
@@ -62,6 +70,13 @@ PAPER = {
 
 CYCLE_SECONDS = 60                 # crypto scan cycle
 STOCK_CYCLE_SECONDS = 15 * 60      # stocks: every 15 min while the market is open
+
+# Bounds for on-disk state. History past these caps is dropped; realized_pnl
+# on the ledger keeps the cumulative figure so equity still reconciles.
+JOURNAL_MAX_LINES = 1_000
+LEDGER_MAX_CLOSED = 200
+LEDGER_MAX_APPLIED = 200
+LEDGER_LOCK_SECONDS = 5
 
 # How long a rejected token sits out, by the check that failed (minutes)
 BENCH_MINUTES = {

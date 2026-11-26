@@ -1,0 +1,5 @@
+# Not installed by the offline tests or by this phase.
+# Anthropic and Alpaca stay out of the default environment so a test run
+# cannot reach a paid API. Do not pip-install this file on the audit host.
+anthropic==2.7.0
+alpaca-py==0.45.0
